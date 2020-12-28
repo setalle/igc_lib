@@ -27,6 +27,7 @@ from __future__ import print_function
 import collections
 import datetime
 import math
+import numpy as np
 import re
 import xml.dom.minidom
 from pathlib2 import Path
@@ -926,15 +927,60 @@ class Flight:
             self.valid = False
 
     def _compute_ground_speeds(self):
-        """Adds ground speed info (km/h) to self.fixes."""
+        """
+        Adds ground speed info (km/h) to self.fixes.
+        SAN: added the calculation of l/d and m/s 
+        which of course do not take into consideration wind and airmass movements
+        for the l/d, it creates the average over the "last minute"
+        to compute the altitude, it takes the average over the last 4 fixes (no matter what the inverval is, this is because the altitude is an integer)
+        it does that for the begin_fix and the end_fix
+        """
         self.fixes[0].gsp = 0.0
+        #SANDRO's stuff
+        C_NUMBER_FIXES = 60 #we use 60 FIXES, hoping that it will be a fix per second
+        C_MINDISTANCE = 1000 #you need to have done at least 1km in the last minute to compute the ld
+        self.fixes[0].start_alt = 0.0
+        self.fixes[0].end_alt = 0.0
+        self.fixes[0].ms = 0.0
+        self.fixes[0].gsp_avg = 0.0
+        self.fixes[0].gsp_std = 0.0
+        self.fixes[0].ld = 0.0 
+        rolling_gsp=[0.0]*C_NUMBER_FIXES
         for i in range(1, len(self.fixes)):
+            self.fixes[i].ms = 0.0
+            self.fixes[i].ld = 0.0
+            self.fixes[i].gsp_avg = 0.0
+            self.fixes[i].gsp_std = 0.0
+            #for testing
+            self.fixes[i].start_alt = 0.0
+            self.fixes[i].end_alt = 0.0
+            interval = self.fixes[i].timestamp - self.fixes[i-1].timestamp
             dist = self.fixes[i].distance_to(self.fixes[i-1])
+            alt_diff = self.fixes[i].gnss_alt - self.fixes[i-1].gnss_alt
             rawtime = self.fixes[i].rawtime - self.fixes[i-1].rawtime
-            if math.fabs(rawtime) < 1e-5:
-                self.fixes[i].gsp = 0.0
-            else:
+            if math.fabs(rawtime) > 1e-5:
                 self.fixes[i].gsp = dist/rawtime*3600.0
+                self.fixes[i].ld=999.9
+                self.fixes[i].gsp_avg = 0.0
+                self.fixes[i].gsp_dev = 0.0
+                rolling_gsp[i % C_NUMBER_FIXES] = self.fixes[i].gsp
+                if i > (C_NUMBER_FIXES):
+                    # we have enough fixes to proceed
+                    start_alt=self.fixes[i-C_NUMBER_FIXES].gnss_alt
+                    end_alt=self.fixes[i].gnss_alt
+                    self.fixes[i].start_alt = start_alt
+                    self.fixes[i].end_alt=end_alt
+                    self.fixes[i].ms = (end_alt-start_alt)/(C_NUMBER_FIXES*interval)
+                    self.fixes[i].gsp_avg = np.average(rolling_gsp)
+                    self.fixes[i].gsp_std = np.std(rolling_gsp)                    
+                    dist_period = self.fixes[i].distance_to(self.fixes[i-C_NUMBER_FIXES])*1000
+                    if end_alt==start_alt:
+                        self.fixes[i].ld=999.9
+                    else:    
+                        alt_diff = start_alt-end_alt
+                        self.fixes[i].ld = dist_period/alt_diff
+                        avg_over_period = dist_period/(self.fixes[i].timestamp-self.fixes[i-C_NUMBER_FIXES].timestamp)*3.6
+                        print(self.fixes[i].timestamp,self.fixes[i].gnss_alt,self.fixes[i].gsp,self.fixes[i].gsp_avg,self.fixes[i].gsp_std,avg_over_period,dist_period,self.fixes[i].ld)
 
     def _flying_emissions(self):
         """Generates raw flying/not flying emissions from ground speed.
